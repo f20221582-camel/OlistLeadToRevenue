@@ -1,62 +1,88 @@
--- 03_funnel.sql
--- DATA CAVEAT: closed deals are only recorded from 2017-12-05. Leads first contacted before
--- 2018-01-01 therefore show artificially low win rates (see conv_by_contact_month).
--- All conversion comparisons use the "complete window": leads first contacted 2018-01-01..2018-05-31,
--- each with >= 167 days of follow-up, measured as "won within 90 days of first contact".
+-- Step 3: the funnel, from lead to won deal.
 
--- name: funnel_all_leads
-SELECT 1 AS step, 'Marketing qualified lead' AS stage, COUNT(*) AS n FROM dim_lead
-UNION ALL SELECT 2, 'Closed deal (won)', COUNT(*) FROM dim_lead WHERE is_won
-UNION ALL SELECT 3, 'Activated (>=1 valid sale observed)', COUNT(*) FROM fact_account WHERE activated
-ORDER BY step;
+-- One row per lead. won_90 is 1 if the deal was won within 90 days of first contact.
+-- (LEFT JOIN keeps leads that never became a deal. For them the deal columns are empty.)
+CREATE OR REPLACE TABLE lead_status AS
+SELECT l.mql_id,
+       l.first_contact_date,
+       l.landing_page_id,
+       COALESCE(l.origin, 'unknown') AS origin,
+       d.won_date::DATE AS won_date,
+       d.won_date::DATE - l.first_contact_date AS days_to_win,
+       CASE WHEN d.mql_id IS NOT NULL AND d.won_date::DATE - l.first_contact_date <= 90
+            THEN 1 ELSE 0 END AS won_90
+FROM leads l
+LEFT JOIN deals d ON l.mql_id = d.mql_id;
 
--- name: funnel_window
-WITH w AS (SELECT * FROM dim_lead WHERE first_contact_date >= DATE '2018-01-01'),
-     won AS (SELECT a.* FROM fact_account a JOIN w USING (mql_id))
-SELECT 1 AS step, 'MQL (first contact Jan-May 2018)' AS stage, (SELECT COUNT(*) FROM w) AS n
-UNION ALL SELECT 2, 'Won within 90 days', (SELECT COUNT(*) FROM w WHERE is_won AND days_to_close<=90)
-UNION ALL SELECT 3, 'Won (any time)', (SELECT COUNT(*) FROM w WHERE is_won)
-UNION ALL SELECT 4, 'Activated (>=1 valid sale observed)', (SELECT COUNT(*) FROM won WHERE activated)
-ORDER BY step;
+-- Win rate by month of first contact, for ALL leads.
+-- It looks bad before 2018 because deals are only recorded from Dec 2017.
+-- So the rest of the analysis only uses leads first contacted Jan-May 2018.
+COPY (
+    SELECT strftime(first_contact_date, '%Y-%m') AS month,
+           COUNT(*) AS leads,
+           SUM(won_90) AS won_90,
+           ROUND(100.0 * SUM(won_90) / COUNT(*), 1) AS win_rate_pct
+    FROM lead_status
+    GROUP BY 1
+    ORDER BY 1
+) TO 'results/win_rate_by_month.csv' (HEADER);
 
--- name: conv_by_contact_month
-SELECT contact_month, COUNT(*) AS leads, SUM(is_won::INT) AS won,
-       ROUND(100.0*SUM(is_won::INT)/COUNT(*),2) AS win_rate_pct,
-       SUM((is_won AND days_to_close<=90)::INT) AS won_within_90d
-FROM dim_lead GROUP BY 1 ORDER BY 1;
+-- Leads we analyse: first contact between 1 Jan and 31 May 2018.
+CREATE OR REPLACE TABLE window_leads AS
+SELECT * FROM lead_status
+WHERE first_contact_date BETWEEN '2018-01-01' AND '2018-05-31';
 
--- name: conv_by_origin
-SELECT origin, COUNT(*) AS leads,
-       SUM((is_won AND days_to_close<=90)::INT) AS won_90d,
-       ROUND(100.0*SUM((is_won AND days_to_close<=90)::INT)/COUNT(*),2) AS win_rate_90d_pct,
-       ROUND(MEDIAN(CASE WHEN is_won THEN days_to_close END),0) AS median_days_to_close
-FROM dim_lead WHERE first_contact_date >= DATE '2018-01-01'
-GROUP BY origin ORDER BY leads DESC;
+-- Overall funnel
+COPY (
+    SELECT COUNT(*) AS leads,
+           SUM(won_90) AS won_90,
+           ROUND(100.0 * SUM(won_90) / COUNT(*), 1) AS win_rate_pct,
+           MEDIAN(days_to_win) AS median_days_to_win
+    FROM window_leads
+) TO 'results/funnel.csv' (HEADER);
 
--- name: origin_mix_by_period
-SELECT origin,
-       SUM((first_contact_date <  DATE '2018-01-01')::INT) AS leads_2017,
-       SUM((first_contact_date >= DATE '2018-01-01')::INT) AS leads_2018
-FROM dim_lead GROUP BY 1 ORDER BY 3 DESC;
+-- Win rate by origin (where the lead came from)
+COPY (
+    SELECT origin,
+           COUNT(*) AS leads,
+           SUM(won_90) AS won_90,
+           ROUND(100.0 * SUM(won_90) / COUNT(*), 1) AS win_rate_pct
+    FROM window_leads
+    GROUP BY origin
+    ORDER BY leads DESC
+) TO 'results/win_rate_by_origin.csv' (HEADER);
 
--- name: landing_pages_window
-SELECT landing_page_id, COUNT(*) AS leads,
-       SUM((is_won AND days_to_close<=90)::INT) AS won_90d,
-       ROUND(100.0*SUM((is_won AND days_to_close<=90)::INT)/COUNT(*),2) AS win_rate_90d_pct
-FROM dim_lead WHERE first_contact_date >= DATE '2018-01-01'
-GROUP BY 1 HAVING COUNT(*)>=100 ORDER BY leads DESC;
+-- Win rate by landing page (only pages with at least 100 leads, so rates are not noise)
+COPY (
+    SELECT landing_page_id,
+           COUNT(*) AS leads,
+           SUM(won_90) AS won_90,
+           ROUND(100.0 * SUM(won_90) / COUNT(*), 1) AS win_rate_pct
+    FROM window_leads
+    GROUP BY landing_page_id
+    HAVING COUNT(*) >= 100
+    ORDER BY leads DESC
+) TO 'results/win_rate_by_landing_page.csv' (HEADER);
 
--- name: landing_page_concentration
-WITH lp AS (SELECT landing_page_id, COUNT(*) leads, SUM((is_won AND days_to_close<=90)::INT) won
-            FROM dim_lead WHERE first_contact_date >= DATE '2018-01-01' GROUP BY 1)
-SELECT COUNT(*) AS n_pages, SUM(leads) AS leads, SUM(won) AS won_90d,
-       SUM(CASE WHEN leads>=100 THEN leads END) AS leads_on_100plus_pages,
-       SUM(CASE WHEN leads>=100 THEN won END) AS won_on_100plus_pages
-FROM lp;
+-- The two best pages together vs all the other pages
+COPY (
+    SELECT CASE WHEN landing_page_id IN ('b76ef37428e6799c421989521c0e5077',
+                                         '22c29808c4f815213303f8933030604c')
+                THEN 'top 2 pages' ELSE 'all other pages' END AS page_group,
+           COUNT(*) AS leads,
+           SUM(won_90) AS won_90,
+           ROUND(100.0 * SUM(won_90) / COUNT(*), 1) AS win_rate_pct
+    FROM window_leads
+    GROUP BY 1
+) TO 'results/win_rate_top2_pages.csv' (HEADER);
 
--- name: days_to_close_distribution
-SELECT MIN(days_to_close) AS min_d, ROUND(QUANTILE_CONT(days_to_close,0.25),0) AS p25,
-       ROUND(MEDIAN(days_to_close),0) AS p50, ROUND(QUANTILE_CONT(days_to_close,0.75),0) AS p75,
-       ROUND(QUANTILE_CONT(days_to_close,0.9),0) AS p90, MAX(days_to_close) AS max_d,
-       SUM((days_to_close<0)::INT) AS negative_days
-FROM dim_lead WHERE is_won AND first_contact_date >= DATE '2018-01-01';
+-- Social and email leads: share of all leads vs share of all wins
+COPY (
+    SELECT CASE WHEN origin IN ('social', 'email') THEN 'social + email' ELSE 'other origins' END AS origin_group,
+           COUNT(*) AS leads,
+           SUM(won_90) AS won_90,
+           ROUND(100.0 * COUNT(*) / (SELECT COUNT(*) FROM window_leads), 1) AS pct_of_leads,
+           ROUND(100.0 * SUM(won_90) / (SELECT SUM(won_90) FROM window_leads), 1) AS pct_of_wins
+    FROM window_leads
+    GROUP BY 1
+) TO 'results/social_email_share.csv' (HEADER);

@@ -1,5 +1,0 @@
-scenario,leads_per_month,win_rate_pct,wins_per_month,activation90_pct,activated_per_month,gmv90_per_active_BRL,gmv90_added_per_monthly_cohort_BRL
-Baseline (measured),1200,11.3,135.6,43.6,59.1,1188,0.0
-A: low landing pages lifted to rest-of-pages rate (assumption),1200,12.0,143.9,43.6,62.8,1188,4396.0
-B: activation 43.6% -> 55.6% (paid-search level; assumption),1200,11.3,135.6,55.6,75.4,1188,19364.0
-A + B,1200,12.0,143.9,55.6,80.0,1188,24829.0

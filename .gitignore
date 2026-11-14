@@ -1,7 +1,3 @@
-# Raw data is NOT committed (Olist licence CC BY-NC-SA 4.0; files are large). See data/README.md
 data/*.csv
 olist.duckdb
-outputs/shot_*.png
-outputs/_run_log.txt
 __pycache__/
-.DS_Store
