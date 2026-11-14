@@ -43,7 +43,7 @@ per month of leads. This is a rough guess. The average is pulled up by a few big
 ## Things to know about the data
 - Deals are only recorded from December 2017, so older leads look like they never convert (`results/win_rate_by_month.csv`).
   I only use leads first contacted from January to May 2018.
-- The order data thins out after 28 August 2018, so I ignore orders after that date. To give every account a full 90 days
+- The order data thins out at the end of August 2018, so I ignore orders placed on or after 28 August. To give every account a full 90 days
   I only use deals won on or before 29 May 2018 for the activation numbers.
 - Only 380 of the 842 deals belong to sellers found in the orders data. "Not selling" can also mean "not in this sample".
 - Lead type is only filled in for won deals, so I cannot compare win rates by lead type.
